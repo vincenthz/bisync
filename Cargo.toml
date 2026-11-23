@@ -1,0 +1,69 @@
+[package]
+name = "bisync"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Bidirectional directory synchronisation over ssh, driven by a BLAKE2b Merkle tree"
+license = "MIT OR Apache-2.0"
+authors = ["Vincent Hanquez"]
+keywords = ["sync", "rsync", "ssh", "merkle", "filesystem"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lib]
+name = "bisync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bisync"
+path = "src/main.rs"
+
+# The one-way, no-state, ask-first sibling. Shares the library — the digests,
+# the descent, the wire format and every guarded write are the same code — and
+# differs in what it does with a difference once it has found one. It has to be
+# installed on both ends of a link exactly as `bisync` does, which is why it
+# ships from the same crate rather than a second one.
+[[bin]]
+name = "unisync"
+path = "src/bin/unisync.rs"
+
+# A sync tool has to be installable on both ends of the link, so the tree is kept
+# short. Transport is `ssh` the program, not an ssh library: the remote end is
+# `bisync server` on the far side of a pipe, exactly the trick rsync plays.
+# Config, the wire format and glob matching are all in-tree, so this is the whole
+# list:
+[dependencies]
+# BLAKE2b-256, for file digests and the Merkle tree over them. `blake2` alone
+# builds nothing else, and cryptoxide has no dependencies of its own.
+cryptoxide = { version = "0.6.3", default-features = false, features = ["blake2"] }
+
+# Filesystem events: FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW
+# on Windows, kqueue on the BSDs. Worth a dependency rather than one FFI binding
+# per platform — these are the fiddliest and least testable interfaces the tool
+# touches, and notify is the crate that has already been debugged against all of
+# them.
+#
+# Default features only. On macOS that means FSEvents rather than kqueue, which
+# matters: kqueue needs a file descriptor per watched file and a source tree
+# exhausts that immediately. `crossbeam-channel`, `flume`, `futures` and `serde`
+# are all left off — bisync debounces into its own `std::sync::mpsc` channel and
+# has nothing to serialise.
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
+
+# DEFLATE, for compressing content in flight. `miniz_oxide` rather than `flate2`
+# because it is the DEFLATE implementation `flate2`'s pure-Rust backend wraps, and
+# going to it directly costs 2 crates instead of 6: bisync compresses one bounded
+# chunk at a time and needs neither streaming state nor the gzip and zlib
+# framing, only `compress_to_vec` and `decompress_to_vec_with_limit` — the latter
+# being an output cap, which is exactly the guard a decompressor fed by a peer
+# needs.
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+
+[dev-dependencies]
+# The compression tests build a decompression bomb, which needs the compressor
+# directly rather than through bisync's never-worse wrapper.
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = true
